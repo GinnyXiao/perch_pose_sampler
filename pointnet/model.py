@@ -144,6 +144,7 @@ class PointNetCls(nn.Module):
         x = F.relu(self.bn1(self.fc1(x)))
         x = F.relu(self.bn2(self.dropout(self.fc2(x))))
         x = self.fc3(x)
+        # print(x.shape)
         return F.log_softmax(x, dim=1), trans, trans_feat
 
 
