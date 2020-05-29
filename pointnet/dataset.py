@@ -482,7 +482,7 @@ class PoseDataset(data.Dataset):
         pose_scores = pose_scores.reshape((80, 5))
         topk_ii = np.unravel_index(np.argsort(pose_scores.ravel())[-k:], pose_scores.shape)
         topk_pose_scores = pose_scores[topk_ii]
-        print(topk_ii)
+        # print(topk_ii)
         topk_rgbs = []
         topk_depths = []
         for i in range(k):
@@ -493,7 +493,7 @@ class PoseDataset(data.Dataset):
             inplane_rotation_angle = \
                 get_inplane_rotation_from_id(self.inplane_rotations, inplane_rotation_id)
             xyz_rotation_angles = [phi, theta, inplane_rotation_angle]
-            print("Recovered rotation : {}".format(xyz_rotation_angles))
+            # print("Recovered rotation : {}".format(xyz_rotation_angles))
             rgb_gl, depth_gl = self.fat_image.render_pose(
                 "004_sugar_box", xyz_rotation_angles, [0,0,1]
             )
