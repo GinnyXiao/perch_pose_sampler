@@ -9,6 +9,7 @@ import torch.utils.data
 from pointnet.dataset import ShapeNetDataset, ModelNetDataset, PoseDataset
 from pointnet.model import PointNetCls, feature_transform_regularizer
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 from tqdm import tqdm
 import torch.nn as nn
 import numpy as np
@@ -124,6 +125,8 @@ class ModelInterface():
             pass
 
     def plot_poses(self, mode, batch_pose_scores, batch_input_imgs, batch_input_clouds, epoch, i, prefix):
+        
+        tboard_tag = "{}_images_epoch_{}/iteration_{}".format(mode, epoch, i)
         topk = 3
         pose_scores = batch_pose_scores[0, :]
         input_img = batch_input_imgs[0, :, :]
@@ -143,7 +146,7 @@ class ModelInterface():
 
         input_img = np.transpose(input_img, (2, 0, 1))
         # print(input_img.shape)
-        self.tboard.add_image("{}_images_epoch_{}/iteration_{}_input_img".format(mode, epoch, i), input_img)
+        self.tboard.add_image("{}_input_img".format(tboard_tag), input_img)
         if mode == "train":
             topk_rgbs, topk_depths = self.dataset.render_poses(pose_scores, topk)
         elif mode == "test":
@@ -159,8 +162,13 @@ class ModelInterface():
             rgb_dls[p_i, :, :, :] = rgb_dl
             # print(rgb_dl.shape)
         
-        self.tboard.add_images("{}_images_epoch_{}/iteration_{}_{}_{}_topk_pose".format(mode, epoch, i, prefix, p_i), rgb_dls)
-
+        self.tboard.add_images("{}_{}_topk_pose".format(tboard_tag, prefix), rgb_dls)
+        
+        fig = plt.figure()
+        plt.plot(pose_scores)
+        self.tboard.add_figure("{}_{}_pose_scores".format(tboard_tag, prefix), fig, 0)
+        plt.close()
+    
     def test(self, epoch):
         self.classifier.eval()
         criterion = nn.KLDivLoss(reduction="batchmean")
@@ -174,6 +182,7 @@ class ModelInterface():
             pred, trans, trans_feat = self.classifier(points)
 
             loss = criterion(pred, target)
+            pred_prob = torch.exp(pred)
 
             target_nonzero = target[target > 0].detach()
             pred_nonzero = pred[target > 0].detach()
@@ -181,8 +190,8 @@ class ModelInterface():
             target_nonzero = target[target > 0].detach()
             pred_nonzero = pred[target > 0].detach()
 
-            pred_prob = torch.exp(pred_nonzero)
-            l2_pred = torch.norm(pred_prob - target_nonzero, 2, -1)
+            pred_prob_nonzero = torch.exp(pred_nonzero)
+            l2_pred = torch.norm(pred_prob_nonzero - target_nonzero, 2, -1)
 
             print('[%d: %d/%d] test loss: %f non-zero l2 error: %f' % (epoch, i, num_batch, loss.item(), l2_pred))
             if self.opt.render_poses:
@@ -197,12 +206,12 @@ class ModelInterface():
                 )
                 self.plot_poses(
                     "test",
-                    pred.detach().cpu().numpy(), 
+                    pred_prob.detach().cpu().numpy(), 
                     imgs.detach().cpu().numpy(),
                     points_orig.detach().cpu().numpy(),
                     epoch,
                     i,
-                    "pred"
+                    "pred_prob"
                 )
             # targets_nonzero_all += target_nonzero.tolist()
             # preds_nonzero_all += pred_nonzero.tolist()
@@ -253,6 +262,7 @@ class ModelInterface():
                 loss.backward()
                 optimizer.step()
 
+                pred_prob = torch.exp(pred)
                 # print(l2)
                 # print(pred[0, :])
                 # print(target[0, :])
@@ -263,10 +273,10 @@ class ModelInterface():
                 target_nonzero = target[target > 0].detach()
                 pred_nonzero = pred[target > 0].detach()
 
-                pred_prob = torch.exp(pred_nonzero)
+                pred_prob_nonzero = torch.exp(pred_nonzero)
                 # print(pred_prob)
                 # print(target_nonzero)
-                l2_pred = torch.norm(pred_prob - target_nonzero, 2, -1)
+                l2_pred = torch.norm(pred_prob_nonzero - target_nonzero, 2, -1)
                 # l2_pred = torch.sum(l2)
 
                 # print(target_nonzero[0, :])
@@ -292,12 +302,12 @@ class ModelInterface():
                         )
                         self.plot_poses(
                             "train",
-                            pred.detach().cpu().numpy(), 
+                            pred_prob.detach().cpu().numpy(), 
                             imgs.detach().cpu().numpy(),
                             points_orig.detach().cpu().numpy(),
                             epoch,
                             i,
-                            "pred"
+                            "pred_prob"
                         )
                     
                 #     j, data = next(enumerate(testdataloader, 0))
