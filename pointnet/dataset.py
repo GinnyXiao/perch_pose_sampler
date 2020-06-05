@@ -290,6 +290,8 @@ class PoseDataset(data.Dataset):
         self.cam_cy_2 = 279.6921
         self.cam_fx_2 = 1077.836
         self.cam_fy_2 = 1078.189
+        self.img_width = 640
+        self.img_height = 480
 
         self.xmap = np.array([[j for i in range(640)] for j in range(480)])
         self.ymap = np.array([[i for i in range(640)] for j in range(480)])
@@ -304,6 +306,7 @@ class PoseDataset(data.Dataset):
         self.num_pt_mesh_large = 2600
         # self.refine = refine
         self.front_num = 2
+        self.fixed_translation = [0, 0, 0.75]
 
         print(self.length)
 
@@ -384,8 +387,9 @@ class PoseDataset(data.Dataset):
         #     img = self.trancolor(img)
 
         # rmin, rmax, cmin, cmax = get_bbox(mask_label)
-        # img = np.transpose(np.array(img)[:, :, :3], (2, 0, 1))[:, rmin:rmax, cmin:cmax]
-
+        img_masked = np.copy(np.array(img))
+        img_masked = np.transpose(img_masked[:, :, :3], (2, 0, 1))[:, rmin:rmax, cmin:cmax]
+        img = np.transpose(np.array(img)[:, :, :3], (2, 0, 1))
         # if self.list[index][:8] == 'data_syn':
         #     seed = random.choice(self.real)
         #     back = np.array(self.trancolor(Image.open('{0}/{1}-color.png'.format(self.root, seed)).convert("RGB")))
@@ -421,16 +425,20 @@ class PoseDataset(data.Dataset):
         xmap_masked = self.xmap[rmin:rmax, cmin:cmax].flatten()[choose][:, np.newaxis].astype(np.float32)
         ymap_masked = self.ymap[rmin:rmax, cmin:cmax].flatten()[choose][:, np.newaxis].astype(np.float32)
         choose = np.array([choose])
-
+        # print(choose.shape)
+        # print(img_masked.shape)
         # cam_scale = meta['factor_depth'][0][0]
         pt2 = depth_masked / self.depth_factor
         pt0 = (ymap_masked - cam_cx) * pt2 / cam_fx
         pt1 = (xmap_masked - cam_cy) * pt2 / cam_fy
         cloud = np.concatenate((pt0, pt1, pt2), axis=1)
 
-        cloud = transform_cloud(cloud, trans=np.array([0, 0, 0.75]), quat=np.array([1, 0, 0, 0]))
-        return torch.from_numpy(np.array(img)), \
+        cloud = transform_cloud(cloud, trans=np.array(self.fixed_translation), quat=np.array([1, 0, 0, 0]))
+        return torch.from_numpy(img), \
                torch.from_numpy(cloud.astype(np.float32)), \
+               torch.from_numpy(img_masked), \
+               self.norm(torch.from_numpy(img_masked.astype(np.float32))), \
+               torch.LongTensor(choose.astype(np.int32)), \
                torch.from_numpy(pose_score_probs.astype(np.float32))
         #    F.softmax(torch.FloatTensor(pose_scores))
         # if self.add_noise:
@@ -495,7 +503,7 @@ class PoseDataset(data.Dataset):
             xyz_rotation_angles = [phi, theta, inplane_rotation_angle]
             # print("Recovered rotation : {}".format(xyz_rotation_angles))
             rgb_gl, depth_gl = self.fat_image.render_pose(
-                "004_sugar_box", xyz_rotation_angles, [0,0,1]
+                "004_sugar_box", xyz_rotation_angles, self.fixed_translation
             )
             topk_rgbs.append(rgb_gl)
             topk_depths.append(depth_gl)

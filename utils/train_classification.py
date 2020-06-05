@@ -6,8 +6,9 @@ import torch
 import torch.nn.parallel
 import torch.optim as optim
 import torch.utils.data
-from pointnet.dataset import ShapeNetDataset, ModelNetDataset, PoseDataset
+from pointnet.dataset import PoseDataset
 from pointnet.model import PointNetCls, feature_transform_regularizer
+from pointnet.fusion_model import PoseNet
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -19,6 +20,9 @@ if '/opt/ros/kinetic/lib/python2.7/dist-packages' in sys.path:
     sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages')
 
 import cv2 
+import matplotlib as mpl
+mpl.rcParams['figure.dpi'] = 300
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -77,6 +81,7 @@ class ModelInterface():
             self.opt.log_dir = 'experiments/logs/ycb' #folder to save logs
             self.opt.noise_trans = 0.00
             self.opt.feature_transform = False
+            self.opt.num_objects = 1
             self.dataset = PoseDataset(
                                 'train', 
                                 self.opt.num_points, 
@@ -112,7 +117,7 @@ class ModelInterface():
         self.testdataloader = torch.utils.data.DataLoader(
                                 self.test_dataset,
                                 batch_size=self.opt.batchsize,
-                                shuffle=True,
+                                shuffle=False,
                                 num_workers=int(self.opt.workers))
 
         print("Train dataset size :{}, Test dataset size : {}".format(len(self.dataset), len(self.test_dataset)))
@@ -124,12 +129,87 @@ class ModelInterface():
         except OSError:
             pass
 
-    def plot_poses(self, mode, batch_pose_scores, batch_input_imgs, batch_input_clouds, epoch, i, prefix):
+    def plot_comparisons(self, mode, batch_target_scores, batch_pred_scores, batch_input_imgs, batch_masked_input_img, batch_input_clouds, epoch, i):
         
+        fig, (axs) = plt.subplots(2, 4)
+        plt.tight_layout()
+        plt.subplots_adjust(wspace=0, hspace=0)
+        tboard_tag = "{}_images_epoch_{}/iteration_{}".format(mode, epoch, i)
+        topk = 3
+
+        input_img = batch_input_imgs[0, :, :]
+        masked_input_img = batch_masked_input_img[0, :, :]
+        
+        # Plot point clouds
+        input_cloud = batch_input_clouds[0, :, :]
+        input_cloud = np.expand_dims(input_cloud, axis=0)
+        input_cloud_color = np.zeros((input_cloud.shape[0], 3), dtype=int)
+        input_cloud_color = np.expand_dims(input_cloud_color, axis=0)
+        # self.tboard.add_mesh(
+        #     "images_epoch_{}_iteration_{}_{}/input_cloud".format(epoch, i, 0), 
+        #     vertices=input_cloud, 
+        #     colors=input_cloud_color
+        # )
+        
+        # Point image RGB inputs
+        input_img = np.transpose(input_img, (1, 2, 0))
+        # print(input_img.shape)
+        masked_input_img = np.transpose(masked_input_img, (1, 2, 0))
+        axs[0,0].imshow(input_img)
+        axs[0,0].axis('off')
+        axs[1,0].imshow(masked_input_img)
+        axs[1,0].axis('off')
+
+        # Render topk predictions and target
+        target_rgb_dls = self.render_scores(
+                            "train",
+                            batch_target_scores, 
+                            topk
+                        )
+        pred_rgb_dls = self.render_scores(
+                            "train",
+                            batch_pred_scores, 
+                            topk
+                        )
+        for i in range(topk):
+            axs[0, 1+i].imshow(target_rgb_dls[i])
+            axs[0, 1+i].axis('off')
+            axs[1, 1+i].imshow(pred_rgb_dls[i])
+            axs[1, 1+i].axis('off')
+        
+        # Plot scores
+        # axs[0, 1].plot(batch_target_scores[0, :])
+        # axs[1, 1].plot(batch_pred_scores[0, :])
+
+        self.tboard.add_figure(tboard_tag, fig, 0)
+        plt.close(fig)
+
+
+    def render_scores(self, mode, batch_pose_scores, topk):
+        pose_scores = batch_pose_scores[0, :]
+        if mode == "train":
+            topk_rgbs, topk_depths = self.dataset.render_poses(pose_scores, topk)
+        elif mode == "test":
+            topk_rgbs, topk_depths = self.test_dataset.render_poses(pose_scores, topk)
+
+        # rgb_dls = np.zeros((topk, self.dataset.img_height, self.dataset.img_width, 3))
+        rgb_dls = []
+        for p_i in range(len(topk_rgbs)):
+            rgb_dl = topk_rgbs[p_i]
+            rgb_dl = cv2.cvtColor(rgb_dl, cv2.COLOR_BGR2RGB)
+            # rgb_dls[p_i, :, :, :] = rgb_dl
+            rgb_dls.append(rgb_dl)
+
+        return rgb_dls        
+        
+    def plot_poses(self, mode, batch_pose_scores, batch_input_imgs, batch_masked_input_img, batch_input_clouds, epoch, i, prefix):
+        # print(batch_input_imgs.shape)
+        # print(batch_input_clouds.shape)
         tboard_tag = "{}_images_epoch_{}/iteration_{}".format(mode, epoch, i)
         topk = 3
         pose_scores = batch_pose_scores[0, :]
         input_img = batch_input_imgs[0, :, :]
+        masked_input_img = batch_masked_input_img[0, :, :]
         # print(batch_input_clouds.shape)
         input_cloud = batch_input_clouds[0, :, :]
         input_cloud = np.expand_dims(input_cloud, axis=0)
@@ -144,9 +224,10 @@ class ModelInterface():
         #     colors=input_cloud_color
         # )
 
-        input_img = np.transpose(input_img, (2, 0, 1))
+        # input_img = np.transpose(input_img, (2, 0, 1))
         # print(input_img.shape)
         self.tboard.add_image("{}_input_img".format(tboard_tag), input_img)
+        # self.tboard.add_image("{}_input_img".format(tboard_tag), masked_input_img)
         if mode == "train":
             topk_rgbs, topk_depths = self.dataset.render_poses(pose_scores, topk)
         elif mode == "test":
@@ -171,15 +252,28 @@ class ModelInterface():
     
     def test(self, epoch):
         self.classifier.eval()
+
+        self.estimator.eval()
         criterion = nn.KLDivLoss(reduction="batchmean")
         targets_nonzero_all = []
         preds_nonzero_all = []
         num_batch = len(self.testdataloader)
+        test_avg_loss = 0.0
         for i, data in enumerate(self.testdataloader, 0):
-            imgs, points_orig, target = data
-            points = points_orig.transpose(2, 1)
-            imgs, points, target = imgs.cuda(), points.cuda(), target.cuda()
-            pred, trans, trans_feat = self.classifier(points)
+            # if i % 60 != 0:
+            #     continue
+            # imgs, points_orig, img_masked, choose, target = data
+            # points = points_orig.transpose(2, 1)
+            # imgs, points, img_masked, choose, target = \
+            #     imgs.cuda(), points.cuda(), img_masked.cuda(), choose.cuda(), target.cuda()
+            
+            imgs, points_orig, img_masked_orig, img_masked, choose, target = data
+            points = points_orig
+            imgs, points, img_masked_orig, img_masked, choose, target = \
+                imgs.cuda(), points.cuda(), img_masked_orig.cuda(), img_masked.cuda(), choose.cuda(), target.cuda()
+
+            # pred, trans, trans_feat = self.classifier(points)
+            pred = self.estimator(img_masked, points, choose)
 
             loss = criterion(pred, target)
             pred_prob = torch.exp(pred)
@@ -192,30 +286,45 @@ class ModelInterface():
 
             pred_prob_nonzero = torch.exp(pred_nonzero)
             l2_pred = torch.norm(pred_prob_nonzero - target_nonzero, 2, -1)
+            test_avg_loss += loss.item()
 
             print('[%d: %d/%d] test loss: %f non-zero l2 error: %f' % (epoch, i, num_batch, loss.item(), l2_pred))
-            if self.opt.render_poses:
-                self.plot_poses(
+            counter = epoch * len(self.testdataloader) + i
+            self.tboard.add_scalar('test/loss', loss.item(), counter)
+
+            if self.opt.render_poses and i % 6 == 0:
+                self.plot_comparisons(
                     "test",
                     target.detach().cpu().numpy(), 
+                    pred.detach().cpu().numpy(), 
                     imgs.detach().cpu().numpy(),
+                    img_masked_orig.detach().cpu().numpy(),
                     points_orig.detach().cpu().numpy(),
                     epoch,
                     i,
-                    "target"
                 )
-                self.plot_poses(
-                    "test",
-                    pred_prob.detach().cpu().numpy(), 
-                    imgs.detach().cpu().numpy(),
-                    points_orig.detach().cpu().numpy(),
-                    epoch,
-                    i,
-                    "pred_prob"
-                )
+                # self.plot_poses(
+                #     "test",
+                #     target.detach().cpu().numpy(), 
+                #     imgs.detach().cpu().numpy(),
+                #     points_orig.detach().cpu().numpy(),
+                #     epoch,
+                #     i,
+                #     "target"
+                # )
+                # self.plot_poses(
+                #     "test",
+                #     pred_prob.detach().cpu().numpy(), 
+                #     imgs.detach().cpu().numpy(),
+                #     points_orig.detach().cpu().numpy(),
+                #     epoch,
+                #     i,
+                #     "pred_prob"
+                # )
             # targets_nonzero_all += target_nonzero.tolist()
             # preds_nonzero_all += pred_nonzero.tolist()
-
+        test_avg_loss /= len(self.testdataloader)
+        self.tboard.add_scalar('test/average_loss', test_avg_loss, epoch)
         # preds_nonzero_all = torch.FloatTensor(preds_nonzero_all)
         # preds_nonzero_probs_all = torch.exp(preds_nonzero_all)
         # targets_nonzero_all = torch.FloatTensor(targets_nonzero_all)
@@ -228,31 +337,45 @@ class ModelInterface():
 
     def train(self):
         self.classifier = PointNetCls(k=self.dataset.num_pose_samples, feature_transform=self.opt.feature_transform)
+        self.estimator = PoseNet(num_points = self.opt.num_points, num_obj = self.opt.num_objects, num_classes = self.dataset.num_pose_samples)
+        print(self.estimator)
+        self.estimator.cuda()
+        self.estimator.train()
 
         if self.opt.model != '':
             self.classifier.load_state_dict(torch.load(self.opt.model))
 
-        optimizer = optim.Adam(self.classifier.parameters(), lr=0.0001, betas=(0.9, 0.999))
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
-        criterion = nn.KLDivLoss(reduction="batchmean")
+        # optimizer = optim.Adam(self.classifier.parameters(), lr=0.0001, betas=(0.9, 0.999))
+        optimizer = optim.Adam(self.estimator.parameters(), lr=0.0001)
+        # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
+        criterion = nn.KLDivLoss(reduction="none")
         self.classifier.cuda()
 
         num_batch = len(self.dataset) / opt.batchsize
 
         for epoch in range(self.opt.nepoch):
-            scheduler.step()
-            for i, data in enumerate(self.dataloader, 0):
-                optimizer.zero_grad()
+            # Test after every epoch
+            self.test(epoch)
 
-                imgs, points_orig, target = data
+            optimizer.zero_grad()
+            self.estimator.train()
+    
+            for i, data in enumerate(self.dataloader, 0):
+
+                imgs, points_orig, img_masked_orig, img_masked, choose, target = data
                 # print(target[0, :])
                 # target = target[:, 0]
-                points = points_orig.transpose(2, 1)
+                # points = points_orig.transpose(2, 1)
+                points = points_orig
                 # print(points.shape)
-                imgs, points, target = imgs.cuda(), points.cuda(), target.cuda()
+                imgs, points, img_masked_orig, img_masked, choose, target = \
+                    imgs.cuda(), points.cuda(), img_masked_orig.cuda(), img_masked.cuda(), choose.cuda(), target.cuda()
                 optimizer.zero_grad()
-                self.classifier = self.classifier.train()
-                pred, trans, trans_feat = self.classifier(points)
+                
+                # self.classifier = self.classifier.train()
+                # pred, trans, trans_feat = self.classifier(points)
+
+                pred = self.estimator(img_masked, points, choose)
                 # loss = F.nll_loss(pred, target)
                 # print(target.shape)
                 # print(pred.shape)
@@ -291,39 +414,38 @@ class ModelInterface():
 
                 if i % 35 == 0:
                     if self.opt.render_poses:
-                        self.plot_poses(
+                        self.plot_comparisons(
                             "train",
                             target.detach().cpu().numpy(), 
+                            pred.detach().cpu().numpy(), 
                             imgs.detach().cpu().numpy(),
+                            img_masked_orig.detach().cpu().numpy(),
                             points_orig.detach().cpu().numpy(),
                             epoch,
                             i,
-                            "target"
                         )
-                        self.plot_poses(
-                            "train",
-                            pred_prob.detach().cpu().numpy(), 
-                            imgs.detach().cpu().numpy(),
-                            points_orig.detach().cpu().numpy(),
-                            epoch,
-                            i,
-                            "pred_prob"
-                        )
-                    
-                #     j, data = next(enumerate(testdataloader, 0))
-                #     points, target = data
-                #     target = target[:, 0]
-                #     points = points.transpose(2, 1)
-                #     points, target = points.cuda(), target.cuda()
-                #     classifier = classifier.eval()
-                #     pred, _, _ = classifier(points)
-                #     loss = criterion(pred, target)
-                #     pred_choice = pred.data.max(1)[1]
-                #     correct = pred_choice.eq(target.data).cpu().sum()
-                #     print('[%d: %d/%d] %s loss: %f accuracy: %f' % (epoch, i, num_batch, blue('test'), loss.item(), correct.item()/float(opt.batchSize)))
-            
-            # Test after every epoch
-            self.test(epoch)
+                        # self.plot_poses(
+                        #     "train",
+                        #     target.detach().cpu().numpy(), 
+                        #     imgs.detach().cpu().numpy(),
+                        #     img_masked.detach().cpu().numpy(),
+                        #     points_orig.detach().cpu().numpy(),
+                        #     epoch,
+                        #     i,
+                        #     "target"
+                        # )
+                        # self.plot_poses(
+                        #     "train",
+                        #     pred_prob.detach().cpu().numpy(), 
+                        #     imgs.detach().cpu().numpy(),
+                        #     img_masked.detach().cpu().numpy(),
+                        #     points_orig.detach().cpu().numpy(),
+                        #     epoch,
+                        #     i,
+                        #     "pred_prob"
+                        # )
+                            
+
 
             # Save model
             if epoch % 25 == 0:
