@@ -220,7 +220,8 @@ class PoseDataset(data.Dataset):
 
         coco_categories = self.coco.loadCats(self.coco.getCatIds())
         self.classes = [category['name'] for category in coco_categories]
-        self.num_pose_samples = len(self.coco.dataset['viewpoints']) * len(self.coco.dataset['inplane_rotations'])
+        # self.num_pose_samples = len(self.coco.dataset['viewpoints']) * len(self.coco.dataset['inplane_rotations'])
+        self.num_pose_samples = len(self.coco.dataset['viewpoints'])
 
         self.depth_factor = 10000
         self.fat_image = FATImage(
@@ -324,6 +325,7 @@ class PoseDataset(data.Dataset):
         # Pick 0th object's annotation
         coco_annotation = self.coco.loadAnns(annotation_ids)[0]
         pose_scores = np.array(coco_annotation['pose_scores'])
+        # print(pose_scores.shape)
         pose_score_probs = pose_scores/np.sum(pose_scores)
         xmin, ymin, width, height = coco_annotation['bbox']
         # rmin, rmax, cmin, cmax = ymin, ymin + height, xmin, xmin + width
@@ -487,7 +489,7 @@ class PoseDataset(data.Dataset):
 
     def render_poses(self, pose_scores, k):
         # pose_scores = pose_scores[0, :]
-        pose_scores = pose_scores.reshape((80, 5))
+        # pose_scores = pose_scores.reshape((80, 5))
         topk_ii = np.unravel_index(np.argsort(pose_scores.ravel())[-k:], pose_scores.shape)
         topk_pose_scores = pose_scores[topk_ii]
         # print(topk_ii)
@@ -495,11 +497,12 @@ class PoseDataset(data.Dataset):
         topk_depths = []
         for i in range(k):
             viewpoint_id = topk_ii[0][i]
-            inplane_rotation_id = topk_ii[1][i]
+            # inplane_rotation_id = topk_ii[1][i]
             theta, phi = \
                 get_viewpoint_rotations_from_id(self.viewpoints_xyz, viewpoint_id)
-            inplane_rotation_angle = \
-                get_inplane_rotation_from_id(self.inplane_rotations, inplane_rotation_id)
+            inplane_rotation_angle = 0
+            # inplane_rotation_angle = \
+            #     get_inplane_rotation_from_id(self.inplane_rotations, inplane_rotation_id)
             xyz_rotation_angles = [phi, theta, inplane_rotation_angle]
             # print("Recovered rotation : {}".format(xyz_rotation_angles))
             rgb_gl, depth_gl = self.fat_image.render_pose(

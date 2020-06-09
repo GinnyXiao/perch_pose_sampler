@@ -22,7 +22,7 @@ if '/opt/ros/kinetic/lib/python2.7/dist-packages' in sys.path:
 import cv2 
 import matplotlib as mpl
 mpl.rcParams['figure.dpi'] = 300
-
+import sklearn.metrics
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -35,13 +35,14 @@ def parse_arguments():
     parser.add_argument(
         '--nepoch', type=int, default=250, help='number of epochs to train for')
     parser.add_argument('--outf', type=str, default='cls', help='output folder')
-    parser.add_argument('--model', type=str, default='', help='model path')
     parser.add_argument('--dataset', type=str, required=True, help="dataset path")
     parser.add_argument('--dataset_annotation', type=str, required=True, help="dataset coco file path")
     parser.add_argument('--test_dataset_annotation', type=str, required=False, help="test dataset coco file path")
     parser.add_argument('--dataset_type', type=str, default='shapenet', help="dataset type shapenet|modelnet40")
     parser.add_argument('--feature_transform', action='store_true', help="use feature transform")
     parser.add_argument('--render_poses', action='store_true', help="use pose rendering for viz")
+    parser.add_argument('--test_only', action='store_true', help="use pose rendering for viz")
+    parser.add_argument('--model', type=str, default='', help='model path')
 
     opt = parser.parse_args()
     print(opt)
@@ -124,10 +125,56 @@ class ModelInterface():
         num_classes = len(self.dataset.classes)
         print('classes', self.dataset.classes)
 
+        # self.classifier = PointNetCls(k=self.dataset.num_pose_samples, feature_transform=self.opt.feature_transform)
+        self.estimator = PoseNet(num_points = self.opt.num_points, num_obj = self.opt.num_objects, num_classes = self.dataset.num_pose_samples)
+        print(self.estimator)
+        
+        if self.opt.model != '':
+            # self.classifier.load_state_dict(torch.load(self.opt.model))
+            self.estimator.load_state_dict(torch.load(self.opt.model))
+
+
         try:
             os.makedirs(self.opt.outf)
         except OSError:
             pass
+
+    def compute_multilabel_ap(self, gt, pred, average="macro"):
+        """
+        Compute the multi-label classification accuracy.
+        Args:
+            gt (np.ndarray): Shape Nx20, 0 or 1, 1 if the object i is present in that
+                image.
+            pred (np.ndarray): Shape Nx20, probability of that object in the image
+                (output probablitiy).
+            valid (np.ndarray): Shape Nx20, 0 if you want to ignore that class for that
+                image. Some objects are labeled as ambiguous.
+        Returns:
+            AP (list): average precision for all classes
+        """
+        nclasses = gt.shape[1]
+        AP = []
+        # pred_cls = pred_cls[pred_cls > 0]
+        # print(gt.shape)
+        gt[gt > 0] = 1
+        for cid in range(nclasses):
+            gt_cls = gt[:, cid].astype('float32')
+            pred_cls = pred[:, cid].astype('float32')
+            # As per PhilK. code:
+            # https://github.com/philkr/voc-classification/blob/master/src/train_cls.py
+            pred_cls -= 1e-5 * gt_cls
+            # print(pred_cls)
+            # print(gt_cls)
+            # if (np.count_nonzero(gt_cls) > 0):
+
+            ap = sklearn.metrics.average_precision_score(
+                gt_cls, pred_cls, average=average)
+            AP.append(ap)
+        # print(AP)
+        # return AP
+        return np.nanmean(AP), AP
+
+
 
     def plot_comparisons(self, mode, batch_target_scores, batch_pred_scores, batch_input_imgs, batch_masked_input_img, batch_input_clouds, epoch, i):
         
@@ -251,7 +298,7 @@ class ModelInterface():
         plt.close()
     
     def test(self, epoch):
-        self.classifier.eval()
+        # self.classifier.eval()
 
         self.estimator.eval()
         criterion = nn.KLDivLoss(reduction="batchmean")
@@ -259,7 +306,12 @@ class ModelInterface():
         preds_nonzero_all = []
         num_batch = len(self.testdataloader)
         test_avg_loss = 0.0
+
+        targets_all = []
+        preds_all = []
         for i, data in enumerate(self.testdataloader, 0):
+            # if i > 10:
+            #     break
             # if i % 60 != 0:
             #     continue
             # imgs, points_orig, img_masked, choose, target = data
@@ -276,7 +328,11 @@ class ModelInterface():
             pred = self.estimator(img_masked, points, choose)
 
             loss = criterion(pred, target)
+
+            targets_all.append(target.detach().cpu().numpy().flatten().tolist())
+
             pred_prob = torch.exp(pred)
+            preds_all.append(pred_prob.detach().cpu().numpy().flatten().tolist())
 
             target_nonzero = target[target > 0].detach()
             pred_nonzero = pred[target > 0].detach()
@@ -303,28 +359,20 @@ class ModelInterface():
                     epoch,
                     i,
                 )
-                # self.plot_poses(
-                #     "test",
-                #     target.detach().cpu().numpy(), 
-                #     imgs.detach().cpu().numpy(),
-                #     points_orig.detach().cpu().numpy(),
-                #     epoch,
-                #     i,
-                #     "target"
-                # )
-                # self.plot_poses(
-                #     "test",
-                #     pred_prob.detach().cpu().numpy(), 
-                #     imgs.detach().cpu().numpy(),
-                #     points_orig.detach().cpu().numpy(),
-                #     epoch,
-                #     i,
-                #     "pred_prob"
-                # )
-            # targets_nonzero_all += target_nonzero.tolist()
-            # preds_nonzero_all += pred_nonzero.tolist()
+
         test_avg_loss /= len(self.testdataloader)
         self.tboard.add_scalar('test/average_loss', test_avg_loss, epoch)
+
+        targets_all = np.array(targets_all)
+        preds_all = np.array(preds_all)
+        # print(targets_all)
+        # print(preds_all)
+        mean_ap, _ = self.compute_multilabel_ap(
+                        targets_all, 
+                        preds_all
+                    )
+        print("test mean ap : {}".format(mean_ap))
+        self.tboard.add_scalar('test/mean_ap', mean_ap, counter)  
         # preds_nonzero_all = torch.FloatTensor(preds_nonzero_all)
         # preds_nonzero_probs_all = torch.exp(preds_nonzero_all)
         # targets_nonzero_all = torch.FloatTensor(targets_nonzero_all)
@@ -333,23 +381,18 @@ class ModelInterface():
         # l2_pred = torch.norm(preds_nonzero_probs_all - targets_nonzero_all, 2, -1)
         # print('[%d] test loss: %f non-zero l2 error: %f' % (epoch, loss.item(), l2_pred))
 
-        self.classifier.train()
+        # self.classifier.train()
 
     def train(self):
-        self.classifier = PointNetCls(k=self.dataset.num_pose_samples, feature_transform=self.opt.feature_transform)
-        self.estimator = PoseNet(num_points = self.opt.num_points, num_obj = self.opt.num_objects, num_classes = self.dataset.num_pose_samples)
-        print(self.estimator)
+
         self.estimator.cuda()
         self.estimator.train()
-
-        if self.opt.model != '':
-            self.classifier.load_state_dict(torch.load(self.opt.model))
 
         # optimizer = optim.Adam(self.classifier.parameters(), lr=0.0001, betas=(0.9, 0.999))
         optimizer = optim.Adam(self.estimator.parameters(), lr=0.0001)
         # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
-        criterion = nn.KLDivLoss(reduction="none")
-        self.classifier.cuda()
+        criterion = nn.KLDivLoss(reduction="batchmean")
+        # self.classifier.cuda()
 
         num_batch = len(self.dataset) / opt.batchsize
 
@@ -357,62 +400,46 @@ class ModelInterface():
             # Test after every epoch
             self.test(epoch)
 
-            optimizer.zero_grad()
             self.estimator.train()
+            optimizer.zero_grad()
     
             for i, data in enumerate(self.dataloader, 0):
 
                 imgs, points_orig, img_masked_orig, img_masked, choose, target = data
-                # print(target[0, :])
-                # target = target[:, 0]
+
                 # points = points_orig.transpose(2, 1)
                 points = points_orig
-                # print(points.shape)
                 imgs, points, img_masked_orig, img_masked, choose, target = \
                     imgs.cuda(), points.cuda(), img_masked_orig.cuda(), img_masked.cuda(), choose.cuda(), target.cuda()
-                optimizer.zero_grad()
+                # optimizer.zero_grad()
                 
                 # self.classifier = self.classifier.train()
                 # pred, trans, trans_feat = self.classifier(points)
 
                 pred = self.estimator(img_masked, points, choose)
-                # loss = F.nll_loss(pred, target)
-                # print(target.shape)
-                # print(pred.shape)
                 loss = criterion(pred, target)
-                # if opt.feature_transform:
-                #     loss += feature_transform_regularizer(trans_feat) * 0.001
                 loss.backward()
-                optimizer.step()
+                if i % 8 == 0:
+                    # Accumulate gradients to some batchsize before taking gradient
+                    optimizer.step()
+                    optimizer.zero_grad()
 
+                # optimizer.step()
                 pred_prob = torch.exp(pred)
-                # print(l2)
-                # print(pred[0, :])
-                # print(target[0, :])
-                # print(pred_prob[0, :])
-                # target_nonzero_ind = torch.nonzero(target)
-                # print(target_nonzero_ind.shape)
-                # target_nonzero = target[target_nonzero_ind]
+
                 target_nonzero = target[target > 0].detach()
                 pred_nonzero = pred[target > 0].detach()
 
                 pred_prob_nonzero = torch.exp(pred_nonzero)
-                # print(pred_prob)
-                # print(target_nonzero)
                 l2_pred = torch.norm(pred_prob_nonzero - target_nonzero, 2, -1)
-                # l2_pred = torch.sum(l2)
 
-                # print(target_nonzero[0, :])
-                # print(pred_prob[0, :])
-                # pred_choice = pred.data.max(1)[1]
-                # correct = pred_choice.eq(target.data).cpu().sum()
-                # print('[%d: %d/%d] train loss: %f accuracy: %f' % (epoch, i, num_batch, loss.item(), l2_pred / float(opt.batchsize)))
-                print('[%d: %d/%d] train loss: %f non-zero l2 error: %f' % (epoch, i, num_batch, loss.item(), l2_pred))
                 counter = epoch * len(self.dataloader) + i
                 self.tboard.add_scalar('train/loss', loss.item(), counter)
-                # print('[%d: %d/%d] train loss: %f' % (epoch, i, num_batch, loss.item()))
+                
+                print('[%d: %d/%d] train loss: %f, non-zero l2 error: %f' % (epoch, i, num_batch, loss.item(), l2_pred))
 
                 if i % 35 == 0:
+
                     if self.opt.render_poses:
                         self.plot_comparisons(
                             "train",
@@ -424,51 +451,12 @@ class ModelInterface():
                             epoch,
                             i,
                         )
-                        # self.plot_poses(
-                        #     "train",
-                        #     target.detach().cpu().numpy(), 
-                        #     imgs.detach().cpu().numpy(),
-                        #     img_masked.detach().cpu().numpy(),
-                        #     points_orig.detach().cpu().numpy(),
-                        #     epoch,
-                        #     i,
-                        #     "target"
-                        # )
-                        # self.plot_poses(
-                        #     "train",
-                        #     pred_prob.detach().cpu().numpy(), 
-                        #     imgs.detach().cpu().numpy(),
-                        #     img_masked.detach().cpu().numpy(),
-                        #     points_orig.detach().cpu().numpy(),
-                        #     epoch,
-                        #     i,
-                        #     "pred_prob"
-                        # )
                             
-
-
             # Save model
-            if epoch % 25 == 0:
-                torch.save(self.classifier.state_dict(), '%s/cls_model_%d.pth' % (self.opt.outf, epoch))
+            if epoch % 10 == 0:
+                # torch.save(self.classifier.state_dict(), '%s/cls_model_%d.pth' % (self.opt.outf, epoch))
+                torch.save(self.estimator.state_dict(), '%s/cls_model_%d.pth' % (self.opt.outf, epoch))
         
-        
-
-# total_correct = 0
-# total_testset = 0
-# for i,data in tqdm(enumerate(testdataloader, 0)):
-#     points, target = data
-#     target = target[:, 0]
-#     points = points.transpose(2, 1)
-#     points, target = points.cuda(), target.cuda()
-#     classifier = classifier.eval()
-#     pred, _, _ = classifier(points)
-#     pred_choice = pred.data.max(1)[1]
-#     correct = pred_choice.eq(target.data).cpu().sum()
-#     total_correct += correct.item()
-#     total_testset += points.size()[0]
-
-# print("final accuracy {}".format(total_correct / float(total_testset)))
-
 if __name__ == "__main__":
 
     opt = parse_arguments()
@@ -479,4 +467,8 @@ if __name__ == "__main__":
     random.seed(opt.manualSeed)
     torch.manual_seed(opt.manualSeed)
     model_interface = ModelInterface(opt)
-    model_interface.train()
+
+    if opt.test_only:
+        model_interface.test(0)        
+    else:
+        model_interface.train()
