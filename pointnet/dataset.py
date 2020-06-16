@@ -326,7 +326,8 @@ class PoseDataset(data.Dataset):
         coco_annotation = self.coco.loadAnns(annotation_ids)[0]
         pose_scores = np.array(coco_annotation['pose_scores'])
         # print(pose_scores.shape)
-        pose_score_probs = pose_scores/np.sum(pose_scores)
+        # pose_score_probs = pose_scores/np.sum(pose_scores)
+        pose_score_probs = pose_scores
         xmin, ymin, width, height = coco_annotation['bbox']
         # rmin, rmax, cmin, cmax = ymin, ymin + height, xmin, xmin + width
         # print(coco_annotation) 

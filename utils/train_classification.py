@@ -128,9 +128,12 @@ class ModelInterface():
         # self.classifier = PointNetCls(k=self.dataset.num_pose_samples, feature_transform=self.opt.feature_transform)
         self.estimator = PoseNet(num_points = self.opt.num_points, num_obj = self.opt.num_objects, num_classes = self.dataset.num_pose_samples)
         print(self.estimator)
+        self.estimator.cuda()
         
         if self.opt.model != '':
+            print("Preloading saved model : {}".format(self.opt.model))
             # self.classifier.load_state_dict(torch.load(self.opt.model))
+            # print(torch.load(self.opt.model))
             self.estimator.load_state_dict(torch.load(self.opt.model))
 
 
@@ -301,7 +304,8 @@ class ModelInterface():
         # self.classifier.eval()
 
         self.estimator.eval()
-        criterion = nn.KLDivLoss(reduction="batchmean")
+        # criterion = nn.KLDivLoss(reduction="batchmean")
+        criterion = nn.BCEWithLogitsLoss()
         targets_nonzero_all = []
         preds_nonzero_all = []
         num_batch = len(self.testdataloader)
@@ -331,20 +335,25 @@ class ModelInterface():
 
             targets_all.append(target.detach().cpu().numpy().flatten().tolist())
 
-            pred_prob = torch.exp(pred)
+            # pred_prob = torch.exp(pred)
+            pred_prob = torch.sigmoid(pred)
             preds_all.append(pred_prob.detach().cpu().numpy().flatten().tolist())
 
-            target_nonzero = target[target > 0].detach()
-            pred_nonzero = pred[target > 0].detach()
+            # print(pred_prob)
+            # print(target)
+            # target_nonzero = target[target > 0].detach()
+            # pred_nonzero = pred[target > 0].detach()
 
-            target_nonzero = target[target > 0].detach()
-            pred_nonzero = pred[target > 0].detach()
+            # target_nonzero = target[target > 0].detach()
+            # pred_nonzero = pred[target > 0].detach()
 
-            pred_prob_nonzero = torch.exp(pred_nonzero)
-            l2_pred = torch.norm(pred_prob_nonzero - target_nonzero, 2, -1)
+            # pred_prob_nonzero = torch.exp(pred_nonzero)
+            # l2_pred = torch.norm(pred_prob_nonzero - target_nonzero, 2, -1)
+
             test_avg_loss += loss.item()
 
-            print('[%d: %d/%d] test loss: %f non-zero l2 error: %f' % (epoch, i, num_batch, loss.item(), l2_pred))
+            # print('[%d: %d/%d] test loss: %f non-zero l2 error: %f' % (epoch, i, num_batch, loss.item(), l2_pred))
+            print('[%d: %d/%d] test loss: %f ' % (epoch, i, num_batch, loss.item()))
             counter = epoch * len(self.testdataloader) + i
             self.tboard.add_scalar('test/loss', loss.item(), counter)
 
@@ -385,20 +394,21 @@ class ModelInterface():
 
     def train(self):
 
-        self.estimator.cuda()
+        # self.estimator.cuda()
         self.estimator.train()
 
         # optimizer = optim.Adam(self.classifier.parameters(), lr=0.0001, betas=(0.9, 0.999))
         optimizer = optim.Adam(self.estimator.parameters(), lr=0.0001)
         # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
-        criterion = nn.KLDivLoss(reduction="batchmean")
+        # criterion = nn.KLDivLoss(reduction="batchmean")
+        criterion = nn.BCEWithLogitsLoss()
         # self.classifier.cuda()
 
         num_batch = len(self.dataset) / opt.batchsize
 
         for epoch in range(self.opt.nepoch):
             # Test after every epoch
-            self.test(epoch)
+            # self.test(epoch)
 
             self.estimator.train()
             optimizer.zero_grad()
@@ -415,28 +425,35 @@ class ModelInterface():
                 
                 # self.classifier = self.classifier.train()
                 # pred, trans, trans_feat = self.classifier(points)
-
+                # target[target > 0] = 1
                 pred = self.estimator(img_masked, points, choose)
                 loss = criterion(pred, target)
                 loss.backward()
+
+                
                 if i % 8 == 0:
                     # Accumulate gradients to some batchsize before taking gradient
                     optimizer.step()
                     optimizer.zero_grad()
 
                 # optimizer.step()
-                pred_prob = torch.exp(pred)
+                # pred_prob = torch.exp(pred)
+                pred_prob = torch.sigmoid(pred)
 
-                target_nonzero = target[target > 0].detach()
-                pred_nonzero = pred[target > 0].detach()
+                print(pred_prob)
+                print(target)
 
-                pred_prob_nonzero = torch.exp(pred_nonzero)
-                l2_pred = torch.norm(pred_prob_nonzero - target_nonzero, 2, -1)
+                # target_nonzero = target[target > 0].detach()
+                # pred_nonzero = pred[target > 0].detach()
+
+                # pred_prob_nonzero = torch.exp(pred_nonzero)
+                # l2_pred = torch.norm(pred_prob_nonzero - target_nonzero, 2, -1)
 
                 counter = epoch * len(self.dataloader) + i
                 self.tboard.add_scalar('train/loss', loss.item(), counter)
                 
-                print('[%d: %d/%d] train loss: %f, non-zero l2 error: %f' % (epoch, i, num_batch, loss.item(), l2_pred))
+                # print('[%d: %d/%d] train loss: %f, non-zero l2 error: %f' % (epoch, i, num_batch, loss.item(), l2_pred))
+                print('[%d: %d/%d] train loss: %f' % (epoch, i, num_batch, loss.item()))
 
                 if i % 35 == 0:
 
@@ -444,7 +461,7 @@ class ModelInterface():
                         self.plot_comparisons(
                             "train",
                             target.detach().cpu().numpy(), 
-                            pred.detach().cpu().numpy(), 
+                            pred_prob.detach().cpu().numpy(), 
                             imgs.detach().cpu().numpy(),
                             img_masked_orig.detach().cpu().numpy(),
                             points_orig.detach().cpu().numpy(),
@@ -456,6 +473,7 @@ class ModelInterface():
             if epoch % 10 == 0:
                 # torch.save(self.classifier.state_dict(), '%s/cls_model_%d.pth' % (self.opt.outf, epoch))
                 torch.save(self.estimator.state_dict(), '%s/cls_model_%d.pth' % (self.opt.outf, epoch))
+                # torch.save({'state_dict': self.fcn_model.state_dict()}, model_path)
         
 if __name__ == "__main__":
 

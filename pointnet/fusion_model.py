@@ -29,7 +29,8 @@ class ModifiedResnet(nn.Module):
     def __init__(self, usegpu=True):
         super(ModifiedResnet, self).__init__()
 
-        self.model = psp_models['resnet18'.lower()]()
+        # self.model = psp_models['resnet18'.lower()]()
+        self.model = psp_models['resnet50'.lower()]()
         self.model = nn.DataParallel(self.model)
 
     def forward(self, x):
@@ -124,7 +125,8 @@ class PoseNet(nn.Module):
         x = self.fc2(x)
         # x = F.relu(self.bn2(self.dropout(self.fc2(x))))
         # x = self.fc3(x)
-        return F.log_softmax(x, dim=1)
+        # return F.log_softmax(x, dim=1)
+        return x
         # rx = F.relu(self.conv1_r(ap_x))
         # tx = F.relu(self.conv1_t(ap_x))
         # cx = F.relu(self.conv1_c(ap_x))      
